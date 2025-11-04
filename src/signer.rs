@@ -6,7 +6,7 @@ use turnkey_client::generated::immutable::common::v1::{HashFunction, PayloadEnco
 use turnkey_client::{TurnkeyClient, TurnkeyP256ApiKey};
 
 pub struct TurnkeySigner {
-    client: TurnkeyClient,
+    client: TurnkeyClient<TurnkeyP256ApiKey>,
     organization_id: String,
     address: Address,
     chain_id: Option<ChainId>,

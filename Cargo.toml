@@ -15,7 +15,7 @@ alloy-primitives = "1.0"
 alloy-consensus = "1.0"
 
 # Official Turnkey SDK
-turnkey_client = { git = "https://github.com/tkhq/rust-sdk.git", package = "turnkey_client" }
+turnkey_client = "0.5"
 
 # Async trait for cleaner async implementations
 async-trait = "0.1"
