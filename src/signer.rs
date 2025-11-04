@@ -1,6 +1,8 @@
 use crate::error::{Result, TurnkeyError};
 use alloy_consensus::SignableTransaction;
-use alloy_network::{AnyNetwork, AnyTxEnvelope, AnyTypedTransaction, Network, NetworkWallet};
+use alloy_network::{
+    AnyNetwork, AnyTxEnvelope, AnyTypedTransaction, Ethereum, Network, NetworkWallet,
+};
 use alloy_primitives::{Address, ChainId, Signature, B256, U256};
 use alloy_signer::Signer;
 use std::sync::Arc;
@@ -167,5 +169,44 @@ impl NetworkWallet<AnyNetwork> for TurnkeySigner {
                 "Cannot sign unknown transaction type",
             )),
         }
+    }
+}
+
+impl NetworkWallet<Ethereum> for TurnkeySigner {
+    fn default_signer_address(&self) -> Address {
+        self.address
+    }
+
+    fn has_signer_for(&self, address: &Address) -> bool {
+        self.address == *address
+    }
+
+    fn signer_addresses(&self) -> impl Iterator<Item = Address> {
+        std::iter::once(self.address)
+    }
+
+    async fn sign_transaction_from(
+        &self,
+        sender: Address,
+        mut tx: <Ethereum as Network>::UnsignedTx,
+    ) -> alloy_signer::Result<<Ethereum as Network>::TxEnvelope> {
+        if sender != self.address {
+            return Err(alloy_signer::Error::other(format!(
+                "Sender address {sender} does not match signer address {}",
+                self.address
+            )));
+        }
+
+        // Set chain ID if configured
+        if let Some(chain_id) = self.chain_id {
+            tx.set_chain_id(chain_id);
+        }
+
+        // Get the signature hash and sign it
+        let signature_hash = tx.signature_hash();
+        let signature = self.sign_hash(&signature_hash).await?;
+
+        // Convert to signed envelope
+        Ok(tx.into_signed(signature).into())
     }
 }
