@@ -1,13 +1,18 @@
 use crate::error::{Result, TurnkeyError};
-use alloy_consensus::SignableTransaction;
+use alloy_consensus::{SignableTransaction, TxEnvelope};
+use alloy_network::eip2718::Decodable2718;
 use alloy_network::{
     AnyNetwork, AnyTxEnvelope, AnyTypedTransaction, Ethereum, Network, NetworkWallet,
 };
 use alloy_primitives::{Address, ChainId, Signature, B256, U256};
 use alloy_signer::Signer;
 use std::sync::Arc;
-use turnkey_client::generated::immutable::activity::v1::SignRawPayloadIntentV2;
-use turnkey_client::generated::immutable::common::v1::{HashFunction, PayloadEncoding};
+use turnkey_client::generated::immutable::activity::v1::{
+    SignRawPayloadIntentV2, SignTransactionIntentV2,
+};
+use turnkey_client::generated::immutable::common::v1::{
+    HashFunction, PayloadEncoding, TransactionType,
+};
 use turnkey_client::{TurnkeyClient, TurnkeyP256ApiKey};
 
 #[derive(Clone, Debug)]
@@ -63,7 +68,7 @@ impl Signer<Signature> for TurnkeySigner {
         let payload = hex::encode(hash.as_slice());
 
         let intent = SignRawPayloadIntentV2 {
-            sign_with: self.address.to_string(),
+            sign_with: self.address.to_checksum(None),
             payload,
             encoding: PayloadEncoding::Hexadecimal,
             hash_function: HashFunction::NoOp,
@@ -156,14 +161,44 @@ impl NetworkWallet<AnyNetwork> for TurnkeySigner {
                     eth_tx.set_chain_id(chain_id);
                 }
 
-                // Get the signature hash and sign it
-                let signature_hash = eth_tx.signature_hash();
-                let signature = self.sign_hash(&signature_hash).await?;
+                // Serialize transaction for signing (RLP encoded)
+                let mut buf = Vec::new();
+                eth_tx.encode_for_signing(&mut buf);
+                let tx_hex = hex::encode(&buf);
 
-                // Convert to signed envelope
-                Ok(AnyTxEnvelope::Ethereum(
-                    eth_tx.into_signed(signature).into(),
-                ))
+                // Request signature from Turnkey using full transaction signing
+                // This allows Turnkey to see and enforce policies on the transaction
+                let intent = SignTransactionIntentV2 {
+                    sign_with: self.address.to_string(),
+                    unsigned_transaction: tx_hex,
+                    r#type: TransactionType::Ethereum,
+                };
+
+                let signed_tx_result = self
+                    .client
+                    .sign_transaction(
+                        self.organization_id.clone(),
+                        self.client.current_timestamp(),
+                        intent,
+                    )
+                    .await
+                    .map_err(|e| alloy_signer::Error::other(format!("Turnkey API error: {e}")))?;
+
+                // Parse the signed transaction from the response
+                let signed_tx_hex = signed_tx_result.signed_transaction;
+                let signed_tx_bytes = hex::decode(&signed_tx_hex).map_err(|e| {
+                    alloy_signer::Error::other(format!("Failed to decode signed transaction: {e}"))
+                })?;
+
+                // Decode as TxEnvelope using EIP-2718 encoding
+                let envelope =
+                    TxEnvelope::decode_2718(&mut signed_tx_bytes.as_slice()).map_err(|e| {
+                        alloy_signer::Error::other(format!(
+                            "Failed to decode transaction envelope: {e}"
+                        ))
+                    })?;
+
+                Ok(AnyTxEnvelope::Ethereum(envelope))
             }
             _ => Err(alloy_signer::Error::other(
                 "Cannot sign unknown transaction type",
@@ -202,11 +237,40 @@ impl NetworkWallet<Ethereum> for TurnkeySigner {
             tx.set_chain_id(chain_id);
         }
 
-        // Get the signature hash and sign it
-        let signature_hash = tx.signature_hash();
-        let signature = self.sign_hash(&signature_hash).await?;
+        // Serialize transaction for signing (RLP encoded)
+        let mut buf = Vec::new();
+        tx.encode_for_signing(&mut buf);
+        let tx_hex = hex::encode(&buf);
 
-        // Convert to signed envelope
-        Ok(tx.into_signed(signature).into())
+        // Request signature from Turnkey using full transaction signing
+        // This allows Turnkey to see and enforce policies on the transaction
+        let intent = SignTransactionIntentV2 {
+            sign_with: self.address.to_checksum(None),
+            unsigned_transaction: tx_hex,
+            r#type: TransactionType::Ethereum,
+        };
+
+        let signed_tx_result = self
+            .client
+            .sign_transaction(
+                self.organization_id.clone(),
+                self.client.current_timestamp(),
+                intent,
+            )
+            .await
+            .map_err(|e| alloy_signer::Error::other(format!("Turnkey API error: {e}")))?;
+
+        // Parse the signed transaction from the response
+        let signed_tx_hex = signed_tx_result.signed_transaction;
+        let signed_tx_bytes = hex::decode(&signed_tx_hex).map_err(|e| {
+            alloy_signer::Error::other(format!("Failed to decode signed transaction: {e}"))
+        })?;
+
+        // Decode as TxEnvelope using EIP-2718 encoding
+        let envelope = TxEnvelope::decode_2718(&mut signed_tx_bytes.as_slice()).map_err(|e| {
+            alloy_signer::Error::other(format!("Failed to decode transaction envelope: {e}"))
+        })?;
+
+        Ok(envelope)
     }
 }
