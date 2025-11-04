@@ -1,12 +1,16 @@
 use crate::error::{Result, TurnkeyError};
+use alloy_consensus::SignableTransaction;
+use alloy_network::{AnyNetwork, AnyTxEnvelope, AnyTypedTransaction, Network, NetworkWallet};
 use alloy_primitives::{Address, ChainId, Signature, B256, U256};
 use alloy_signer::Signer;
+use std::sync::Arc;
 use turnkey_client::generated::immutable::activity::v1::SignRawPayloadIntentV2;
 use turnkey_client::generated::immutable::common::v1::{HashFunction, PayloadEncoding};
 use turnkey_client::{TurnkeyClient, TurnkeyP256ApiKey};
 
+#[derive(Clone, Debug)]
 pub struct TurnkeySigner {
-    client: TurnkeyClient<TurnkeyP256ApiKey>,
+    client: Arc<TurnkeyClient<TurnkeyP256ApiKey>>,
     organization_id: String,
     address: Address,
     chain_id: Option<ChainId>,
@@ -25,7 +29,7 @@ impl TurnkeySigner {
             .map_err(|e| TurnkeyError::Configuration(e.to_string()))?;
 
         Ok(Self {
-            client,
+            client: Arc::new(client),
             organization_id,
             address,
             chain_id: None,
@@ -114,5 +118,54 @@ impl Signer<Signature> for TurnkeySigner {
 
     fn with_chain_id(self, chain_id: Option<ChainId>) -> Self {
         Self::with_chain_id(self, chain_id)
+    }
+}
+
+impl NetworkWallet<AnyNetwork> for TurnkeySigner {
+    fn default_signer_address(&self) -> Address {
+        self.address
+    }
+
+    fn has_signer_for(&self, address: &Address) -> bool {
+        self.address == *address
+    }
+
+    fn signer_addresses(&self) -> impl Iterator<Item = Address> {
+        std::iter::once(self.address)
+    }
+
+    async fn sign_transaction_from(
+        &self,
+        sender: Address,
+        tx: <AnyNetwork as Network>::UnsignedTx,
+    ) -> alloy_signer::Result<<AnyNetwork as Network>::TxEnvelope> {
+        if sender != self.address {
+            return Err(alloy_signer::Error::other(format!(
+                "Sender address {sender} does not match signer address {}",
+                self.address
+            )));
+        }
+
+        // Match on the transaction type and handle each variant
+        match tx {
+            AnyTypedTransaction::Ethereum(mut eth_tx) => {
+                // Set chain ID if configured
+                if let Some(chain_id) = self.chain_id {
+                    eth_tx.set_chain_id(chain_id);
+                }
+
+                // Get the signature hash and sign it
+                let signature_hash = eth_tx.signature_hash();
+                let signature = self.sign_hash(&signature_hash).await?;
+
+                // Convert to signed envelope
+                Ok(AnyTxEnvelope::Ethereum(
+                    eth_tx.into_signed(signature).into(),
+                ))
+            }
+            _ => Err(alloy_signer::Error::other(
+                "Cannot sign unknown transaction type",
+            )),
+        }
     }
 }

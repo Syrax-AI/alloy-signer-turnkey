@@ -13,6 +13,9 @@ categories = ["cryptography", "web-programming"]
 alloy-signer = "1.0"
 alloy-primitives = "1.0"
 alloy-consensus = "1.0"
+alloy-consensus-any = "1.0"
+alloy-network = "1.0"
+alloy-rlp = "0.3"
 
 # Official Turnkey SDK
 turnkey_client = "0.5"
